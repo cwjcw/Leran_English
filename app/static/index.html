@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Leran English</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Grade 4 English Speaking</p>
+        <h1>Leran English</h1>
+      </div>
+      <div class="profile">
+        <span id="profileName">未进入</span>
+        <button id="resetProfileBtn" class="ghost" type="button">切换用户</button>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section id="loginView" class="login">
+        <div class="login-copy">
+          <h2>进入学习</h2>
+          <p>输入名字后开始。后面的练习都只使用你今天输入的单词。</p>
+        </div>
+        <form id="loginForm" class="login-form">
+          <label>
+            名字
+            <input id="usernameInput" autocomplete="name" placeholder="例如 Tom" required />
+          </label>
+          <button type="submit">开始</button>
+        </form>
+        <details class="key-box">
+          <summary>我已有 API Key</summary>
+          <label>
+            API Key
+            <input id="apiKeyInput" placeholder="le_..." />
+          </label>
+          <button id="useKeyBtn" type="button">使用这个 Key</button>
+        </details>
+      </section>
+
+      <section id="appView" class="workspace hidden">
+        <nav class="tabs" aria-label="学习模块">
+          <button class="tab active" data-tab="wordsPanel" type="button">1 单词</button>
+          <button class="tab locked" data-tab="wordPracticePanel" type="button" disabled>2 单词背诵</button>
+          <button class="tab locked" data-tab="scenarioPanel" type="button" disabled>3 对话</button>
+          <button class="tab locked" data-tab="storyPanel" type="button" disabled>4 短文背诵</button>
+          <button class="tab locked" data-tab="summaryPanel" type="button" disabled>5 今日成果</button>
+        </nav>
+
+        <section id="wordsPanel" class="panel active">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Step 1</p>
+              <h2>今天要学的单词</h2>
+            </div>
+            <button id="loadWordsBtn" type="button">刷新</button>
+          </div>
+          <div class="word-import">
+            <textarea id="wordImportInput" rows="5" placeholder="只输入英文单词，例如：&#10;apple&#10;school&#10;happy"></textarea>
+            <div class="stack-actions">
+              <label>
+                对话轮数
+                <input id="roundLimitInput" type="number" min="1" max="10" value="5" />
+              </label>
+              <fieldset class="feature-choice">
+                <legend>选择今天要练的功能</legend>
+                <label><input id="featurePractice" type="checkbox" checked /> 背诵单词</label>
+                <label><input id="featureChat" type="checkbox" checked /> 场景对话</label>
+                <label><input id="featureStory" type="checkbox" checked /> 短文背诵</label>
+              </fieldset>
+              <button id="importWordsBtn" type="button">导入并解锁</button>
+            </div>
+          </div>
+          <div id="wordList" class="word-grid"></div>
+        </section>
+
+        <section id="wordPracticePanel" class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Step 2</p>
+              <h2>看中文，背英文</h2>
+            </div>
+            <button id="startWordPracticeBtn" type="button">重新开始</button>
+          </div>
+          <label class="speed-control">
+            发音语速
+            <input class="speechSpeed" type="range" min="-2" max="2" step="0.5" value="0" />
+            <span class="speedText">正常</span>
+          </label>
+          <div class="practice-card">
+            <div id="practiceChinese" class="practice-cn">先导入并选择单词。</div>
+            <input id="practiceAnswer" placeholder="输入英文单词" autocomplete="off" />
+            <div class="record-row">
+              <button id="checkPracticeBtn" type="button">检查</button>
+              <button id="recordWordBtn" type="button">录音背诵</button>
+              <button id="hearPracticeBtn" class="ghost" type="button">听发音</button>
+              <button id="nextPracticeBtn" class="ghost" type="button">下一个</button>
+              <span id="practiceResult"></span>
+            </div>
+          </div>
+        </section>
+
+        <section id="scenarioPanel" class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Step 3</p>
+              <h2>场景对话</h2>
+            </div>
+            <button id="generateScenarioBtn" type="button">生成对话</button>
+          </div>
+          <div id="scenarioBox" class="result-box empty">对话会根据第 1 页选择的单词生成。</div>
+          <label class="speed-control">
+            发音语速
+            <input class="speechSpeed" type="range" min="-2" max="2" step="0.5" value="0" />
+            <span class="speedText">正常</span>
+          </label>
+          <div id="coreWordChips" class="chip-row"></div>
+          <div id="chatLog" class="chat-log"></div>
+          <div class="record-row">
+            <button id="recordChatBtn" type="button" disabled>开始说话</button>
+            <button id="repeatAiBtn" class="ghost" type="button" disabled>再听一遍</button>
+            <span id="chatRecordState"></span>
+          </div>
+        </section>
+
+        <section id="storyPanel" class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Step 4</p>
+              <h2>短文背诵</h2>
+            </div>
+            <button id="generateStoryBtn" type="button">生成短文</button>
+          </div>
+          <div id="storyControls" class="story-controls hidden">
+            <audio id="storyAudio" controls></audio>
+            <select id="reciteMode">
+              <option value="sentence">一句一句背</option>
+              <option value="full">整篇背诵</option>
+            </select>
+            <button id="hintBtn" class="ghost" type="button">给我提示</button>
+          </div>
+          <label class="speed-control">
+            发音语速
+            <input class="speechSpeed" type="range" min="-2" max="2" step="0.5" value="0" />
+            <span class="speedText">正常</span>
+          </label>
+          <div id="sentencePicker" class="sentence-picker hidden"></div>
+          <div id="storyBox" class="story-box empty">生成后先展示短文；点击开始录音后短文会隐藏。</div>
+          <div id="liveTranscript" class="live-transcript hidden"></div>
+          <div class="record-row">
+            <button id="recordStoryBtn" type="button" disabled>开始录音</button>
+            <span id="storyRecordState"></span>
+          </div>
+          <div id="verifyBox" class="verify-grid"></div>
+        </section>
+
+        <section id="summaryPanel" class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Step 5</p>
+              <h2>今日成果</h2>
+            </div>
+            <button id="refreshSummaryBtn" type="button">刷新成果</button>
+          </div>
+          <div id="summaryBox" class="summary-grid"></div>
+        </section>
+      </section>
+    </main>
+
+    <div id="toast" class="toast hidden"></div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
