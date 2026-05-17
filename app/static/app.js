@@ -1,6 +1,10 @@
 const state = {
   apiKey: localStorage.getItem("leran_api_key") || "",
   user: JSON.parse(localStorage.getItem("leran_user") || "null"),
+  children: JSON.parse(localStorage.getItem("leran_children") || "[]"),
+  activeChildId: Number(localStorage.getItem("leran_active_child_id") || "0"),
+  rewards: [],
+  awardedTasks: new Set(JSON.parse(localStorage.getItem("leran_awarded_tasks") || "[]")),
   words: [],
   selectedWordIds: new Set(JSON.parse(localStorage.getItem("leran_selected_word_ids") || "[]")),
   scenario: null,
@@ -22,6 +26,8 @@ const state = {
   storySentences: [],
   selectedSentenceIndex: 0,
   scores: { words: 0, chat: 0, story: 0 },
+  chatScoreTotal: 0,
+  storyScoreTotal: 0,
   completed: { words: false, practice: false, chat: false, story: false },
   selectedFeatures: JSON.parse(localStorage.getItem("leran_selected_features") || '{"practice":true,"chat":true,"story":true}'),
   recorders: {},
@@ -32,7 +38,11 @@ const state = {
 const $ = (id) => document.getElementById(id);
 
 function todayTag() {
-  return state.user ? `today-${state.user.id}` : "today";
+  return state.user && state.activeChildId ? `today-${state.user.id}-${state.activeChildId}` : "today";
+}
+
+function wordbookTag() {
+  return state.user ? `wordbook-${state.user.id}` : "wordbook";
 }
 
 function speechRate() {
@@ -147,13 +157,69 @@ function saveProfile(user, apiKey) {
   renderProfile();
 }
 
+function saveChildren(children) {
+  state.children = children || [];
+  if (!state.activeChildId && state.children.length) state.activeChildId = state.children[0].id;
+  localStorage.setItem("leran_children", JSON.stringify(state.children));
+  localStorage.setItem("leran_active_child_id", String(state.activeChildId || ""));
+}
+
+function renderChildren() {
+  const select = $("childSelect");
+  select.innerHTML = state.children.map((child) => `<option value="${child.id}">${child.name}</option>`).join("");
+  if (state.activeChildId) select.value = String(state.activeChildId);
+  const child = state.children.find((item) => item.id === state.activeChildId);
+  $("childPoints").textContent = `积分 ${child?.points || 0}`;
+  const pointsTotal = $("pointsViewTotal");
+  if (pointsTotal) pointsTotal.textContent = `积分 ${child?.points || 0}`;
+}
+
 function renderProfile() {
   const hasProfile = Boolean(state.apiKey && state.user);
   $("loginView").classList.toggle("hidden", hasProfile);
   $("appView").classList.toggle("hidden", !hasProfile);
   $("profileName").textContent = hasProfile ? state.user.username : "未进入";
-  if (hasProfile) loadWords();
+  if (hasProfile) {
+    renderChildren();
+    loadWords();
+    loadRewards();
+    showHomeChoice();
+  }
   renderLocks();
+}
+
+function showHomeChoice() {
+  $("homeChoiceView").classList.remove("hidden");
+  $("studyView").classList.add("hidden");
+  $("pointsView").classList.add("hidden");
+  $("wordbookView").classList.add("hidden");
+  renderChildren();
+}
+
+function showStudyView() {
+  $("homeChoiceView").classList.add("hidden");
+  $("pointsView").classList.add("hidden");
+  $("wordbookView").classList.add("hidden");
+  $("studyView").classList.remove("hidden");
+  loadWords();
+}
+
+function showPointsView() {
+  $("homeChoiceView").classList.add("hidden");
+  $("studyView").classList.add("hidden");
+  $("wordbookView").classList.add("hidden");
+  $("pointsView").classList.remove("hidden");
+  renderChildren();
+  loadRewards();
+}
+
+function showWordbookView() {
+  $("homeChoiceView").classList.add("hidden");
+  $("studyView").classList.add("hidden");
+  $("pointsView").classList.add("hidden");
+  $("wordbookView").classList.remove("hidden");
+  loadWords();
+  loadWordbook();
 }
 
 function selectedIds() {
@@ -184,7 +250,7 @@ async function speakText(text) {
 
 async function loadWords() {
   try {
-    state.words = await api(`/api/words?tag=${encodeURIComponent(todayTag())}`);
+    state.words = await api(`/api/words?tag=${encodeURIComponent(wordbookTag())}`);
     state.words.forEach((word) => state.selectedWordIds.add(word.id));
     state.completed.words = state.words.length > 0;
     saveSelectedIds();
@@ -203,13 +269,23 @@ function parseWords(text) {
   const invalid = rawWords.find((word) => !/^[A-Za-z][A-Za-z'-]*$/.test(word));
   if (invalid) throw new Error(`${invalid} 不是有效英文单词，请修改后再导入。`);
   return rawWords
-    .map((word) => ({ word, translation: "", phonetic: "", dynamic_tags: todayTag() }));
+    .map((word) => ({
+      word,
+      translation: "",
+      phonetic: "",
+      dynamic_tags: wordbookTag(),
+      textbook: $("textbookInput").value.trim() || null,
+      grade: $("gradeInput").value.trim() || null,
+      unit: $("unitInput").value.trim() || null,
+      lesson: $("lessonInput").value.trim() || null,
+    }));
 }
 
 function renderWords() {
   const list = $("wordList");
   if (!state.words.length) {
-    list.innerHTML = '<div class="result-box empty">第 1 页是今天的单词本。请输入英文单词后导入。</div>';
+    list.innerHTML = '<div class="result-box empty">单词本还没有单词。请先回首页进入单词本导入。</div>';
+    renderWordbookManageList();
     return;
   }
 
@@ -254,6 +330,34 @@ function renderWords() {
       }
     });
   });
+  renderWordbookManageList();
+}
+
+function renderWordbookManageList() {
+  const list = $("wordbookManageList");
+  if (!list) return;
+  if (!state.words.length) {
+    list.innerHTML = '<div class="result-box empty">单词本还没有单词。</div>';
+    return;
+  }
+  list.innerHTML = state.words.map((word) => `
+    <div class="word-item">
+      <button class="delete-word" data-delete-word-id="${word.id}" type="button" title="删除">×</button>
+      <div class="word-title">${word.word}</div>
+      <div class="word-meta">${word.translation || ""} ${word.phonetic || ""}</div>
+      <div class="word-meta">${[word.textbook, word.grade, word.unit, word.lesson].filter(Boolean).join(" / ")}</div>
+    </div>
+  `).join("");
+  list.querySelectorAll("[data-delete-word-id]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await api(`/api/words/${Number(button.dataset.deleteWordId)}`, { method: "DELETE" });
+        await loadWords();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+  });
 }
 
 function renderCoreWordChips() {
@@ -275,15 +379,16 @@ function renderPracticeCard() {
   $("practiceChinese").textContent = word ? (word.translation || word.word) : "先在第 1 页输入并选择单词";
 }
 
-function checkPracticeAnswer() {
+async function checkPracticeAnswer() {
   const word = currentPracticeWord();
   if (!word) return showToast("请先输入单词。");
   const answer = normalizeEnglish($("practiceAnswer").value);
   if (answer === normalizeEnglish(word.word)) {
     state.practiceCorrect += 1;
     state.wordInputDone[word.id] = true;
-    state.wordScores[word.id] = Math.max(state.wordScores[word.id] || 0, 50);
+    state.wordScores[word.id] = Math.max(state.wordScores[word.id] || 0, 0.5);
     $("practiceResult").textContent = "正确";
+    updateWordbookScore(word, 0.5, state.wordSpeechDone[word.id] ? 0.5 : 0);
     speakText(word.word);
   } else {
     $("practiceResult").textContent = `再试一次：${word.word}`;
@@ -316,12 +421,35 @@ function updatePracticeCompletion() {
   state.completed.practice = words.length > 0 && words.every((word) => state.wordInputDone[word.id] && state.wordSpeechDone[word.id]);
   state.scores.words = words.length
     ? Math.round(words.reduce((sum, word) => {
-      const score = (state.wordInputDone[word.id] ? 50 : 0) + (state.wordSpeechDone[word.id] ? 50 : 0);
+      const score = (state.wordInputDone[word.id] ? 0.5 : 0) + (state.wordSpeechDone[word.id] ? 0.5 : 0);
       state.wordScores[word.id] = score;
       return sum + score;
-    }, 0) / words.length)
+    }, 0) / words.length * 100)
     : 0;
   renderLocks();
+}
+
+function discreteScore(value, maxValue) {
+  if (maxValue <= 0) return 0;
+  const ratio = Math.max(0, Math.min(1, value / maxValue));
+  if (ratio >= 0.9) return 2;
+  if (ratio >= 0.7) return 1.5;
+  if (ratio >= 0.45) return 1;
+  if (ratio >= 0.2) return 0.5;
+  return 0;
+}
+
+async function updateWordbookScore(word, spellingScore = 0, pronunciationScore = 0) {
+  if (!state.activeChildId || !word) return;
+  await api("/api/wordbook/score", {
+    method: "POST",
+    json: {
+      child_id: state.activeChildId,
+      word_id: word.id,
+      spelling_score: spellingScore,
+      pronunciation_score: pronunciationScore,
+    },
+  });
 }
 
 function renderScenario(data) {
@@ -526,6 +654,92 @@ function renderSummary() {
     ${state.selectedFeatures.chat ? `<div class="summary-card">对话分数<span class="summary-number">${state.scores.chat}</span></div>` : ""}
     ${state.selectedFeatures.story ? `<div class="summary-card">背诵分数<span class="summary-number">${state.scores.story}</span></div>` : ""}
   `;
+  loadWordbook();
+}
+
+async function loadWordbook() {
+  if (!state.activeChildId || !$("wordbookList")) return;
+  try {
+    const items = await api(`/api/wordbook/${state.activeChildId}`);
+    $("wordbookList").innerHTML = items.length ? items.map((item) => `
+      <div class="wordbook-item">
+        <strong>${item.word}</strong>
+        <span>${item.translation || ""}</span>
+        <span>${item.total_score}/1</span>
+        <span>${[item.textbook, item.grade, item.unit, item.lesson].filter(Boolean).join(" / ")}</span>
+      </div>
+    `).join("") : '<div class="result-box empty">还没有单词学习记录。</div>';
+  } catch (error) {
+    $("wordbookList").innerHTML = `<div class="result-box empty">${error.message}</div>`;
+  }
+}
+
+async function refreshChildren() {
+  const children = await api("/api/children");
+  saveChildren(children);
+  renderChildren();
+}
+
+async function awardPointsOnce(taskType, points, description) {
+  if (!state.activeChildId) return;
+  const key = `${state.activeChildId}:${taskType}`;
+  if (state.awardedTasks.has(key)) return;
+  await api("/api/points/award", {
+    method: "POST",
+    json: { child_id: state.activeChildId, task_type: taskType, points, description },
+  });
+  state.awardedTasks.add(key);
+  localStorage.setItem("leran_awarded_tasks", JSON.stringify([...state.awardedTasks]));
+  await refreshChildren();
+}
+
+async function loadRewards() {
+  if (!state.apiKey) return;
+  state.rewards = await api("/api/rewards");
+  renderRewards();
+}
+
+function renderRewards() {
+  const list = $("rewardList");
+  if (!list) return;
+  const child = state.children.find((item) => item.id === state.activeChildId);
+  if (!state.rewards.length) {
+    list.innerHTML = '<div class="result-box empty">还没有奖品，家长可以先添加。</div>';
+    return;
+  }
+  list.innerHTML = state.rewards.map((reward) => {
+    const enough = (child?.points || 0) >= reward.points_required;
+    const image = reward.image_url
+      ? `<img class="reward-image" src="${reward.image_url}" alt="${reward.name}" />`
+      : `<div class="reward-image reward-placeholder">奖品</div>`;
+    return `
+      <div class="reward-item">
+        ${image}
+        <div class="reward-meta">
+          <strong>${reward.name}</strong>
+          <p>${reward.description || "暂无描述"}</p>
+        </div>
+        <span>${reward.points_required} 分</span>
+        <button data-reward-id="${reward.id}" ${enough ? "" : "disabled"} type="button">兑换</button>
+      </div>
+    `;
+  }).join("");
+  list.querySelectorAll("[data-reward-id]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        const child = await api("/api/rewards/redeem", {
+          method: "POST",
+          json: { child_id: state.activeChildId, reward_id: Number(button.dataset.rewardId) },
+        });
+        state.children = state.children.map((item) => item.id === child.id ? child : item);
+        saveChildren(state.children);
+        renderChildren();
+        renderRewards();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+  });
 }
 
 function setupTabs() {
@@ -538,22 +752,65 @@ function setupTabs() {
 }
 
 function setupEvents() {
+  $("showRegisterBtn").addEventListener("click", () => {
+    $("loginBox").classList.add("hidden");
+    $("registerBox").classList.remove("hidden");
+  });
+
+  $("showLoginBtn").addEventListener("click", () => {
+    $("registerBox").classList.add("hidden");
+    $("loginBox").classList.remove("hidden");
+  });
+
   $("loginForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
-      const username = $("usernameInput").value.trim();
-      const data = await api("/api/users", { method: "POST", json: { username } });
-      saveProfile({ id: data.id, username: data.username, total_stars: data.total_stars }, data.api_key);
+      const data = await api("/api/auth/login", {
+        method: "POST",
+        json: {
+          username: $("loginUsernameInput").value.trim(),
+          password: $("loginPasswordInput").value,
+        },
+      });
+      saveChildren(data.children);
+      saveProfile(data.user, data.api_key);
     } catch (error) {
       showToast(error.message);
     }
   });
 
-  $("useKeyBtn").addEventListener("click", async () => {
+  $("addChildBtn").addEventListener("click", () => {
+    const box = document.createElement("div");
+    box.className = "child-extra";
+    box.innerHTML = `
+      <label>孩子姓名<input class="extraChildName" /></label>
+      <label>出生年月日<input class="extraChildBirth" type="date" /></label>
+    `;
+    $("extraChildren").appendChild(box);
+  });
+
+  $("registerBtn").addEventListener("click", async () => {
     try {
-      state.apiKey = $("apiKeyInput").value.trim();
-      const user = await api("/api/users/me");
-      saveProfile(user, state.apiKey);
+      const children = [{ name: $("childNameInput").value.trim(), birth_date: $("childBirthInput").value }];
+      document.querySelectorAll(".child-extra").forEach((row) => {
+        const name = row.querySelector(".extraChildName").value.trim();
+        const birth = row.querySelector(".extraChildBirth").value;
+        if (name && birth) children.push({ name, birth_date: birth });
+      });
+      const data = await api("/api/auth/register", {
+        method: "POST",
+        json: {
+          username: $("registerUsernameInput").value.trim(),
+          password: $("registerPasswordInput").value,
+          email: $("emailInput").value.trim(),
+          children,
+          phone: $("phoneInput").value.trim() || null,
+          city: $("cityInput").value.trim() || null,
+          school: $("schoolInput").value.trim() || null,
+        },
+      });
+      saveChildren(data.children);
+      saveProfile(data.user, data.api_key);
     } catch (error) {
       showToast(error.message);
     }
@@ -562,16 +819,79 @@ function setupEvents() {
   $("resetProfileBtn").addEventListener("click", () => {
     localStorage.removeItem("leran_user");
     localStorage.removeItem("leran_api_key");
+    localStorage.removeItem("leran_children");
+    localStorage.removeItem("leran_active_child_id");
+    localStorage.removeItem("leran_awarded_tasks");
     localStorage.removeItem("leran_selected_word_ids");
     state.user = null;
     state.apiKey = "";
     state.words = [];
+    state.children = [];
+    state.activeChildId = 0;
+    state.awardedTasks.clear();
     state.selectedWordIds.clear();
     renderProfile();
   });
 
   $("loadWordsBtn").addEventListener("click", loadWords);
   $("refreshSummaryBtn").addEventListener("click", renderSummary);
+  $("childSelect").addEventListener("change", () => {
+    state.activeChildId = Number($("childSelect").value);
+    localStorage.setItem("leran_active_child_id", String(state.activeChildId));
+    loadWords();
+    renderChildren();
+    renderRewards();
+  });
+
+  $("enterWordbookBtn").addEventListener("click", showWordbookView);
+  $("enterStudyBtn").addEventListener("click", showStudyView);
+  $("enterPointsBtn").addEventListener("click", showPointsView);
+  $("backHomeFromWordbookBtn").addEventListener("click", showHomeChoice);
+  $("backHomeFromStudyBtn").addEventListener("click", showHomeChoice);
+  $("backHomeFromPointsBtn").addEventListener("click", showHomeChoice);
+
+  $("addRewardBtn").addEventListener("click", async () => {
+    try {
+      await api("/api/rewards", {
+        method: "POST",
+        json: {
+          name: $("rewardNameInput").value.trim(),
+          points_required: Number($("rewardPointsInput").value),
+          description: $("rewardDescInput").value.trim() || null,
+          image_url: $("rewardImageInput").value.trim() || null,
+        },
+      });
+      $("rewardNameInput").value = "";
+      $("rewardPointsInput").value = "";
+      $("rewardDescInput").value = "";
+      $("rewardImageInput").value = "";
+      await loadRewards();
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
+  $("refreshWordbookBtn").addEventListener("click", () => {
+    loadWords();
+    loadWordbook();
+  });
+
+  $("excelImportInput").addEventListener("change", async () => {
+    try {
+      const file = $("excelImportInput").files?.[0];
+      if (!file) return;
+      const form = new FormData();
+      form.append("file", file);
+      const imported = await api("/api/words/excel", { method: "POST", body: form });
+      imported.forEach((word) => state.selectedWordIds.add(word.id));
+      saveSelectedIds();
+      await loadWords();
+      $("excelImportInput").value = "";
+      showToast("Excel 单词已导入");
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
   $("roundLimitInput").value = state.roundLimit;
   $("featurePractice").checked = state.selectedFeatures.practice;
   $("featureChat").checked = state.selectedFeatures.chat;
@@ -590,10 +910,6 @@ function setupEvents() {
     try {
       const words = parseWords($("wordImportInput").value);
       if (!words.length) throw new Error("请至少输入一个英文单词。");
-      syncFeatureChoice();
-      if (!state.selectedFeatures.practice && !state.selectedFeatures.chat && !state.selectedFeatures.story) {
-        throw new Error("请至少选择一个要练习的功能。");
-      }
       $("importWordsBtn").disabled = true;
       $("importWordsBtn").textContent = "导入中";
       const imported = await api("/api/words/bulk", { method: "POST", json: { words } });
@@ -601,16 +917,24 @@ function setupEvents() {
       saveSelectedIds();
       $("wordImportInput").value = "";
       await loadWords();
-      state.completed.words = true;
-      renderLocks();
-      switchToPanel(nextSelectedPanel());
-      showToast("单词已导入");
+      showToast("单词已导入单词本");
     } catch (error) {
       showToast(error.message);
     } finally {
       $("importWordsBtn").disabled = false;
       $("importWordsBtn").textContent = "导入单词";
     }
+  });
+
+  $("unlockStudyBtn").addEventListener("click", () => {
+    syncFeatureChoice();
+    if (!selectedIds().length) return showToast("请先从单词本选择今天要学习的单词。");
+    if (!state.selectedFeatures.practice && !state.selectedFeatures.chat && !state.selectedFeatures.story) {
+      return showToast("请至少选择一个要练习的功能。");
+    }
+    state.completed.words = true;
+    renderLocks();
+    switchToPanel(nextSelectedPanel());
   });
 
   $("startWordPracticeBtn").addEventListener("click", () => {
@@ -635,6 +959,7 @@ function setupEvents() {
       const blob = await recordOnce($("recordWordBtn"), $("practiceResult"));
       if (!blob) return;
       state.wordSpeechDone[word.id] = true;
+      await updateWordbookScore(word, state.wordInputDone[word.id] ? 0.5 : 0, 0.5);
       updatePracticeCompletion();
       renderSummary();
       const form = new FormData();
@@ -649,6 +974,7 @@ function setupEvents() {
       updatePracticeCompletion();
       renderSummary();
       if (state.completed.practice) {
+        await awardPointsOnce("word_practice", 10, "完成单词背诵");
         renderLocks();
         switchToPanel(nextSelectedPanel("practice"));
       }
@@ -697,9 +1023,15 @@ function setupEvents() {
 
       appendBubble("child", data.transcript);
       state.chatTurns += 1;
-      state.scores.chat = Math.min(100, Math.round((state.chatTurns / state.roundLimit) * 100));
+      const targetWords = selectedWords().map((word) => normalizeEnglish(word.word));
+      const saidWords = data.transcript.split(/\s+/).map(normalizeEnglish);
+      const usedCoreWords = targetWords.filter((word) => saidWords.includes(word)).length;
+      const turnScore = discreteScore(usedCoreWords + (data.transcript.length > 8 ? 1 : 0), Math.max(2, targetWords.length));
+      state.chatScoreTotal += turnScore;
+      state.scores.chat = Math.round((state.chatScoreTotal / (state.roundLimit * 2)) * 100);
       if (state.chatTurns >= state.roundLimit) {
         state.completed.chat = true;
+        await awardPointsOnce("scenario_chat", 15, "完成场景对话");
         $("recordChatBtn").disabled = true;
         $("repeatAiBtn").disabled = true;
         $("chatRecordState").textContent = "对话完成";
@@ -781,8 +1113,12 @@ function setupEvents() {
       }
       state.storyVerifiedIndex = data.verified_index;
       const total = (activeStoryText().match(/[A-Za-z']+/g) || []).length || 1;
-      state.scores.story = Math.min(100, Math.round((data.verified_index / total) * 100));
+      const sentenceScore = discreteScore(data.verified_index, total);
+      state.storyScoreTotal += sentenceScore;
+      const denominator = $("reciteMode").value === "sentence" ? Math.max(1, state.storySentences.length * 2) : 2;
+      state.scores.story = Math.min(100, Math.round((state.storyScoreTotal / denominator) * 100));
       state.completed.story = state.scores.story >= 60;
+      if (state.completed.story) await awardPointsOnce("story_recitation", 20, "完成短文背诵");
       renderVerify(data.words_status);
       const transcript = data.raw_assessment?.transcript;
       if (transcript) {

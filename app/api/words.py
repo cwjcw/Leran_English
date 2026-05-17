@@ -1,4 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from tempfile import NamedTemporaryFile
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from openpyxl import load_workbook
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -11,6 +15,14 @@ from app.services.ai_service import AIService
 
 
 router = APIRouter(prefix="/words", tags=["words"])
+
+
+def _row_value(row: dict, *names: str) -> str | None:
+    for name in names:
+        value = row.get(name)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
 
 
 @router.get("", response_model=list[WordRead])
@@ -81,6 +93,56 @@ async def bulk_import_words(
     for word in created:
         db.refresh(word)
     return created
+
+
+@router.post("/excel", response_model=list[WordRead], status_code=status.HTTP_201_CREATED)
+async def import_words_from_excel(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[Word]:
+    suffix = Path(file.filename or "words.xlsx").suffix
+    if suffix.lower() not in {".xlsx", ".xlsm"}:
+        raise HTTPException(status_code=422, detail="Please upload an .xlsx file.")
+
+    content = await file.read()
+    with NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(content)
+        tmp_path = Path(tmp.name)
+    try:
+        workbook = load_workbook(tmp_path, read_only=True, data_only=True)
+        sheet = workbook.active
+        rows = list(sheet.iter_rows(values_only=True))
+    finally:
+        if "workbook" in locals():
+            workbook.close()
+        tmp_path.unlink(missing_ok=True)
+
+    if not rows:
+        raise HTTPException(status_code=422, detail="Excel file is empty.")
+
+    headers = [str(cell or "").strip().lower() for cell in rows[0]]
+    words: list[WordCreate] = []
+    for values in rows[1:]:
+        row = {headers[index]: values[index] for index in range(min(len(headers), len(values)))}
+        word = _row_value(row, "word", "单词", "英文")
+        if not word:
+            continue
+        words.append(
+            WordCreate(
+                word=word,
+                translation=_row_value(row, "translation", "中文", "释义") or "",
+                phonetic=_row_value(row, "phonetic", "音标"),
+                dynamic_tags=_row_value(row, "tag", "tags", "标签") or f"wordbook-{current_user.id}",
+                textbook=_row_value(row, "textbook", "教材"),
+                grade=_row_value(row, "grade", "年级"),
+                unit=_row_value(row, "unit"),
+                lesson=_row_value(row, "lesson"),
+            )
+        )
+    if not words:
+        raise HTTPException(status_code=422, detail="No words found in Excel file.")
+    return await bulk_import_words(BulkWordImport(words=words), db, current_user)
 
 
 @router.get("/{word_id}", response_model=WordRead)
